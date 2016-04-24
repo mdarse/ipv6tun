@@ -1,0 +1,286 @@
+#!/bin/sh
+set -e
+set -o pipefail
+
+version="1.0"
+prefix="/usr/local"
+config_file=""
+tunnel_interface="gif0"
+
+print_usage() {
+    echo "usage: $(basename "$0") [-h] [-c filename] [-p prefix] command
+
+options:
+  -h          : this help
+  -p prefix   : set prefix path (default: $prefix/)
+  -c filename : set configuration file (default: $prefix/etc/ipv6tun.conf)
+
+commands:
+  up             : set tunnel up
+  down           : set tunnel down
+  network-change : update tunnel according current network settings"
+}
+
+log() {
+    echo "[$(date)] $*" >&2
+}
+
+mute() {
+    "$@" >/dev/null 2>&1
+}
+
+# trap_exec() {
+#     log "An error occured, exiting"
+#     exit 1
+# }
+# trap trap_exec ERR
+
+
+
+config=(
+    ipv6_wan_address
+    ipv6_default_route
+    remote_ipv4_address
+    tunnelbroker_update_enabled
+    tunnelbroker_tunnel_id
+    tunnelbroker_account_name
+    tunnelbroker_update_key
+)
+
+config_init() {
+    local prop
+    for prop in "${config[@]}"; do
+        eval "config_${prop}=\"\""
+    done
+}
+
+config_load() {
+    local line
+    while read line; do
+        if echo $line | grep -F = &>/dev/null; then
+            local prop="$(echo "$line" | cut -d '=' -f 1)"
+            local value="$(echo "$line" | cut -d '=' -f 2-)"
+            eval "config_${prop}=\"$(echo \"\$value\")\""
+        fi
+    done < "$1"
+}
+
+config_get() {
+    eval "echo \"\$config_$1\""
+}
+
+
+
+load_config_file() {
+    if [ -z "$config_file" ]; then
+        config_file="$prefix/etc/ipv6tun.conf"
+    fi
+    config_init
+    set +e
+    config_load "$config_file" 2>/dev/null
+    if [ "$?" -ne 0 ]; then
+        log "could not load config file: $config_file"
+        exit 1
+    fi
+    set -e
+}
+
+interface_to_host() {
+    local destination="$1"
+    interface="$(route -n get "$destination" 2> /dev/null | grep 'interface:' | cut -d: -f 2)"
+    echo "${interface##\ }" # Trim left
+}
+
+interface_ipv4_address() {
+    local interface="$1"
+    ifconfig "$interface" | grep '^\tinet ' | cut -f 2 -d' '
+}
+
+interface_ipv6_addresses() {
+    local interface="$1"
+    ifconfig "$interface" | grep "^\tinet6 " | cut -f 2 -d' '
+}
+
+interface_has_ipv6_address() {
+    local address
+    while read -r address; do
+        if [ "$address" = "$2" ]; then
+            return 0
+        fi
+    done <<< "$(interface_ipv6_addresses "$1")"
+    return 1
+}
+
+route_via() {
+    local destination
+    local gateway
+    local _
+    local interface
+    while read -r destination gateway _ interface; do
+        if [ "$interface" = "$tunnel_interface" ] && [ "$gateway" = "$1" ]; then
+            echo "$destination"
+            return
+        fi
+    done <<< "$(netstat -rnf inet6 | tail -n +5)"
+}
+
+ensure_tunnel_interface_exists() {
+    set +e
+    ifconfig "$1" > /dev/null 2>&1
+    local return_status="$?"
+    set -e
+    if [ "$return_status" -eq "0" ]; then
+        ifconfig "$tunnel_interface" create
+    fi
+}
+
+tunnel_up() {
+    local interface="$(interface_to_host "$config_remote_ipv4_address")"
+    if [ -z "$interface" ]; then
+        log "No usable interface, aborting"
+        exit
+    fi
+    local local_ipv4_address="$(interface_ipv4_address "$interface")"
+
+    log "Configuring tunnel to $config_remote_ipv4_address via $local_ipv4_address ($interface)"
+    ifconfig "$tunnel_interface" tunnel $local_ipv4_address $config_remote_ipv4_address
+
+    if ! interface_has_ipv6_address "$tunnel_interface" "$config_ipv6_wan_address"; then
+        log "Applying WAN address $config_ipv6_wan_address with gateway $config_ipv6_default_route"
+        ifconfig "$tunnel_interface" inet6 "$config_ipv6_wan_address" "$config_ipv6_default_route" prefixlen 128
+    fi
+
+    local destination="$(route_via "$config_ipv6_default_route")"
+    if [ -z "$destination" ]; then
+        log "Setting up default route to $config_ipv6_default_route"
+        route -n add -inet6 default "$config_ipv6_default_route" > /dev/null
+    fi
+}
+
+tunnel_down() {
+    log "Removing tunnel"
+    ifconfig "$tunnel_interface" deletetunnel
+
+    # Only try to remove address if we need to
+    if interface_has_ipv6_address "$tunnel_interface" "$config_ipv6_wan_address"; then
+        log "Removing WAN address $config_ipv6_wan_address"
+        ifconfig "$tunnel_interface" inet6 "$config_ipv6_wan_address" delete
+    fi
+
+    # Only try to remove route if we need to
+    local destination="$(route_via "$config_ipv6_default_route")"
+    if [ -n "$destination" ]; then
+        log "Removing $destination route to $config_ipv6_default_route"
+        route -n delete -inet6 "$destination" "$config_ipv6_default_route" > /dev/null
+    fi
+}
+
+tunnel_status() {
+    local lib_dir="$prefix/var/lib/ipv6tun"
+    if [ ! -d "$lib_dir" ]; then
+        mkdir -p "$lib_dir"
+    fi
+    local tunnel_status_file="$lib_dir/tunnel_status"
+
+    if [ -n "$1" ]; then
+        # Write status
+        if [ "$1" = "up" ]; then
+            echo "1" > "$tunnel_status_file"
+        elif [ "$1" = "down" ]; then
+            echo "0" > "$tunnel_status_file"
+        fi
+    else
+        # Read status
+        if [ ! -f "$tunnel_status_file" ]; then
+            echo "0" > "$tunnel_status_file"
+        fi
+        if [ "$(cat "$tunnel_status_file")" = "1" ]; then
+            echo "up"
+        else
+            echo "down"
+        fi
+    fi
+
+}
+
+tunnelbroker_update() {
+    log "Updating WAN IPv4 address on tunnel broker"
+    local response=$(curl \
+        --user-agent "ipv6tun/$version (https://github.com/mdarse/ipv6tun)" \
+        --fail \
+        --silent \
+        --get https://ipv4.tunnelbroker.net/nic/update \
+        --user "$config_tunnelbroker_account_name:$config_tunnelbroker_update_key" \
+        --data-urlencode "hostname=$config_tunnelbroker_tunnel_id")
+    if echo $response | grep -q "good\ \|nochg\ "; then
+        log "Update successful ($response)"
+    else
+        log "Update error: $response"
+    fi
+}
+
+ensure_tunnelbroker_up_to_date() {
+    if [ "$config_tunnelbroker_update_enabled" = "yes" ]; then
+        tunnelbroker_update
+    fi
+}
+
+while getopts :hp:c: option; do
+    case "$option" in
+        h)  print_usage
+            exit
+            ;;
+        p)  prefix="$OPTARG"
+            ;;
+        c)  config_file="$OPTARG"
+            ;;
+        :)  echo "missing argument for -$OPTARG" >&2
+            print_usage >&2
+            exit 1
+            ;;
+        \?) echo "invalid option: -$OPTARG" >&2
+            print_usage >&2
+            exit 1
+            ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+if [ -z "$1" ]; then
+    echo "missing command" >&2
+    print_usage >&2
+    exit 1
+fi
+
+case "$1" in
+    up)
+        load_config_file
+        ensure_tunnel_interface_exists
+        tunnel_up
+        tunnel_status up
+        log "Tunnel is up"
+        ensure_tunnelbroker_up_to_date
+        ;;
+    down)
+        load_config_file
+        ensure_tunnel_interface_exists
+        tunnel_down
+        tunnel_status down
+        log "Tunnel is down"
+        ;;
+    network-change)
+        if [ "$(tunnel_status)" = "down" ]; then
+            log "Skipping reconfiguration because tunnel is down"
+            exit
+        fi
+        log "Reconfiguring after network change"
+        load_config_file
+        ensure_tunnel_interface_exists
+        tunnel_up
+        log "Tunnel is up"
+        ensure_tunnelbroker_up_to_date
+        ;;
+    *)
+        echo "invalid command: $1"
+        print_usage >&2
+esac
