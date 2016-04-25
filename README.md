@@ -1,12 +1,10 @@
 # ipv6tun
 IPv6 Tunnel Broker daemon for Mac OS X
 
-An IPv6 tunnel makes it possible to access the IPv6 side of the Internet when the current internet service provider doesn't come with native support (yet?). This project aims to make it easier to setup and use such tunnel on Mac OS X.
+## Why?
+Because [the Internet is running out of room](https://www.google.com/intl/en/ipv6/), we will see more and more services only available through IPv6. An IPv6 tunnel makes it possible to access the IPv6 side of the Internet when the current internet service provider doesn't come with native support (yet?). This project aims to make it easier to setup and use such tunnel on Mac OS X.
 
 Right now, tunnels were only tested with [Hurricane Electric's Tunnel Broker service](https://tunnelbroker.net), but it should work with other providers too.
-
-## Public client address update
-ipv6tun can take care of updating the client side IPv4 address of the tunnel on the provider side. This feature is optional and only supported with Hurricane Electric at the moment. Support for SixXS is being considered.
 
 ## FAQ
 
@@ -40,3 +38,6 @@ tunnelbroker_update_key=secret
 ```
 
 Once configuration is done tunnel can be made `up` or `down` with respectively `$ ipv6tun up` or `$ ipv6tun down`. Tunnel status persist across reboots.
+
+## Public client address update
+ipv6tun can take care of updating the client side IPv4 address of the tunnel on the provider side. This feature is optional and only supported with Hurricane Electric at the moment. Support for SixXS is being considered.
