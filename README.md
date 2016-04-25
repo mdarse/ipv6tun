@@ -1,7 +1,7 @@
 # ipv6tun
 IPv6 Tunnel Broker daemon for Mac OS X
 
-An IPv6 tunnel make it possible to access the IPv6 side of the Internet when the current internet service provider doesn't comes (yet?) with native support. This project aims to make it easier to setup and use such tunnel on Mac OS X.
+An IPv6 tunnel makes it possible to access the IPv6 side of the Internet when the current internet service provider doesn't come with native support (yet?). This project aims to make it easier to setup and use such tunnel on Mac OS X.
 
 Right now, tunnels were only tested with [Hurricane Electric's Tunnel Broker service](https://tunnelbroker.net), but it should work with other providers too.
 
@@ -19,7 +19,7 @@ In the project directory:
 ```shell
 $ sudo make install
 ```
-This copies the `ipv6tun` executable to `/usr/local` and a configuration file at `/usr/local/etc/ipv6tun.conf`. It also take take care of registering with the system in order to keep the tunnel working in case of network change:
+This copies the `ipv6tun` executable to `/usr/local` and a configuration file at `/usr/local/etc/ipv6tun.conf`. It also take care of registering with the system in order to keep the tunnel working in case of network change:
 - Wi-Fi toggle
 - Ethernet (un)plug
 - DHCP lease expiry
